@@ -18,16 +18,19 @@ async def get_params(session, url):
     try:
         async with session.get(url, ssl=False, timeout=10) as r:
             soup = BeautifulSoup(await r.text(), "lxml")
+
+            def safe(name):
+                el = soup.find("input", {"name": name})
+                return el["value"] if el and el.has_attr("value") else ""
+
             return {
-                k: soup.find("input", {"name": v})
-                for k, v in {
-                    "n": "ctl00$nonceKeyFld",
-                    "h": "ctl00$hdParameter",
-                    "v": "__VIEWSTATE"
-                }.items()
+                "n": safe("ctl00$nonceKeyFld"),
+                "h": safe("ctl00$hdParameter"),
+                "v": safe("__VIEWSTATE")
             }
+
     except:
-        return None
+        return {"n": "", "h": "", "v": ""}
 
 
 async def run_mst(session, mst, sem, p, url):
@@ -36,7 +39,9 @@ async def run_mst(session, mst, sem, p, url):
 
         payload = {
             "ctl00$SM": "ctl00$C$UpdatePanel1|ctl00$C$UC_PERS_LIST1$BtnFilter",
-            "__VIEWSTATE": p['v']["value"] if p.get('v') else "",
+            "__VIEWSTATE": p.get("v", ""),
+            "ctl00$nonceKeyFld": p.get("n", ""),
+            "ctl00$hdParameter": p.get("h", ""),
             "ctl00$nonceKeyFld": p['n']["value"] if p.get('n') else "",
             "ctl00$hdParameter": p['h']["value"] if p.get('h') else "",
             "ctl00$C$UC_PERS_LIST1$ENTERPRISE_CODEFilterFld": mst_fmt,
