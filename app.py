@@ -1,54 +1,17 @@
-﻿import streamlit as st
+import streamlit as st
 import asyncio, aiohttp, pandas as pd, re, time, io
 from bs4 import BeautifulSoup
 
 # --- UI CONFIG & STYLE ---
 st.set_page_config(page_title="MST Scraper Pro", layout="wide", page_icon="🚀")
-
 st.markdown("""<style>
     .stApp { background: linear-gradient(135deg, #d7e1ec, #f5f7fa); }
-    .header-container {
-        display: flex;
-        align-items: center;
-        background: linear-gradient(135deg, #1f4037, #99f2c8);
-        padding: 15px;
-        border-radius: 16px;
-        margin-bottom: 20px;
-        color: white;
-    }
-    .logo-img {
-        border-radius: 10px;
-        margin-right: 20px;
-    }
-    .header-text {
-        flex-grow: 1;
-        text-align: center;
-        font-weight: 800;
-        font-size: 25px;
-        margin: 0;
-    }
-    .stButton>button { 
-        background: linear-gradient(135deg, #00c6ff, #0072ff); 
-        color: white; 
-        border-radius: 10px; 
-        width: 100%; 
-        height: 50px; 
-        font-weight: bold; 
-    }
+    .header { background: linear-gradient(135deg, #1f4037, #99f2c8); padding: 18px; border-radius: 16px; 
+               text-align: center; color: white; font-weight: 800; font-size: 25px; margin-bottom: 20px; }
+    .stButton>button { background: linear-gradient(135deg, #00c6ff, #0072ff); color: white; border-radius: 10px; width: 100%; height: 50px; font-weight: bold; }
 </style>""", unsafe_allow_html=True)
 
-# --- HEADER WITH LOGO ---
-col_logo, col_title = st.columns([1, 6])
-
-with col_logo:
-    # Hiển thị logo từ file đã upload
-    try:
-        st.image("logo.jpg", width=100)
-    except:
-        st.error("Thiếu file logo.jpg")
-
-with col_title:
-    st.markdown('<div class="header-container"><p class="header-text">HỆ THỐNG TRA CỨU VAI TRÒ CÁ NHÂN DKKD</p></div>', unsafe_allow_html=True)
+st.markdown('<div class="header">HỆ THỐNG TRA CỨU VAI TRÒ CÁ NHÂN DKKD</div>', unsafe_allow_html=True)
 
 # --- BACKEND LOGIC ---
 async def get_params(session, url):
@@ -65,6 +28,7 @@ async def get_params(session, url):
             }
     except:
         return None
+
 
 async def run_mst(session, mst, sem, p, url):
     async with sem:
@@ -106,10 +70,12 @@ async def run_mst(session, mst, sem, p, url):
                         for tr in table.find_all("tr")[1:]
                         if tr.find_all("td")
                     ]
+
             except:
                 await asyncio.sleep(0.5)
 
         return [{"MST_Gốc": mst_fmt, "Trạng_Thái": "Lỗi kết nối"}]
+
 
 # --- UI INPUTS ---
 with st.sidebar:
@@ -121,11 +87,13 @@ with st.sidebar:
 uploaded_file = st.file_uploader("Upload danh sách MST (txt hoặc xlsx)", type=["txt", "xlsx"])
 btn_start = st.button("BẮT ĐẦU 🚀")
 
+
 # --- MAIN PROCESS ---
 if btn_start:
     if not (base_url and cookie_raw and uploaded_file):
         st.error("Vui lòng điền đầy đủ URL, Cookie và Upload file!")
     else:
+
         # Load MST List
         if uploaded_file.name.endswith(".txt"):
             mst_list = [l.decode().strip() for l in uploaded_file if l.strip()]
@@ -142,6 +110,7 @@ if btn_start:
 
         async def main():
             conn = aiohttp.TCPConnector(limit=0, ssl=False)
+
             async with aiohttp.ClientSession(
                 cookies=cookies,
                 connector=conn,
@@ -150,33 +119,47 @@ if btn_start:
                     "X-Requested-With": "XMLHttpRequest"
                 }
             ) as sess:
+
                 p = await get_params(sess, base_url)
                 if not p:
                     return [{"Lỗi": "Không thể kết nối hoặc URL sai"}]
 
                 sem = asyncio.Semaphore(concurrency)
                 results, start, total = [], time.time(), len(mst_list)
+
                 tasks = [run_mst(sess, m, sem, p, base_url) for m in mst_list]
 
                 for i, coro in enumerate(asyncio.as_completed(tasks), 1):
                     res = await coro
                     results.extend(res)
+
                     elapsed = time.time() - start
                     speed = i / elapsed if elapsed > 0 else 0
+
                     prog.progress(i / total)
-                    metr.markdown(f"⚡ **Tốc độ:** {speed:.2f} req/s | ⏳ **Dự kiến còn:** {int((total-i)/speed) if speed > 0 else 0}s")
+                    metr.markdown(
+                        f"⚡ **Tốc độ:** {speed:.2f} req/s | ⏳ **Dự kiến còn:** {int((total-i)/speed) if speed > 0 else 0}s"
+                    )
                     stat.text(f"Đang xử lý: {i}/{total}")
+
                 return results
 
         data = asyncio.run(main())
 
+        # ================= FIX CỘT RỖNG =================
         df = pd.DataFrame(data)
+
+        # Xoá cột toàn NaN
         df = df.dropna(axis=1, how='all')
+
+        # Xoá cột toàn chuỗi rỗng
         df = df.loc[:, ~(df.astype(str).apply(lambda col: col.str.strip().eq('').all()))]
+        # ==================================================
 
         st.success(f"Hoàn thành tra cứu {len(mst_list)} MST!")
         st.dataframe(df, use_container_width=True)
 
+        # Export Excel
         out = io.BytesIO()
         with pd.ExcelWriter(out, engine="openpyxl") as writer:
             df.to_excel(writer, index=False)
@@ -187,3 +170,4 @@ if btn_start:
             f"ketqua_{int(time.time())}.xlsx",
             mime="application/vnd.ms-excel"
         )
+
