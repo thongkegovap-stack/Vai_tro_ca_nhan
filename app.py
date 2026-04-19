@@ -35,20 +35,26 @@ st.markdown("""
 
 st.markdown('<div class="header">HỆ THỐNG TRA CỨU VAI TRÒ CÁ NHÂN DKKD</div>', unsafe_allow_html=True)
 
+
 # ================= BACKEND =================
 async def get_params(session, url):
     try:
-        async with session.get(url, ssl=False, timeout=10) as r:
-            soup = BeautifulSoup(await r.text(), "lxml")
+        async with session.get(url, ssl=False, timeout=15) as r:
+            html = await r.text()
+            soup = BeautifulSoup(html, "lxml")
+
+            def get_val(name):
+                tag = soup.find("input", {"name": name})
+                return tag.get("value") if tag else ""
+
             return {
-                k: soup.find("input", {"name": v})
-                for k, v in {
-                    "n": "ctl00$nonceKeyFld",
-                    "h": "ctl00$hdParameter",
-                    "v": "__VIEWSTATE"
-                }.items()
+                "n": get_val("ctl00$nonceKeyFld"),
+                "h": get_val("ctl00$hdParameter"),
+                "v": get_val("__VIEWSTATE")
             }
-    except:
+
+    except Exception as e:
+        print("GET PARAM ERROR:", e)
         return None
 
 
@@ -59,17 +65,23 @@ async def run_mst(session, mst, sem, p, url):
 
         payload = {
             "ctl00$SM": "ctl00$C$UpdatePanel1|ctl00$C$UC_PERS_LIST1$BtnFilter",
-            "__VIEWSTATE": p['v']["value"] if p.get('v') else "",
-            "ctl00$nonceKeyFld": p['n']["value"] if p.get('n') else "",
-            "ctl00$hdParameter": p['h']["value"] if p.get('h') else "",
+            "__VIEWSTATE": p.get("v", ""),
+            "ctl00$nonceKeyFld": p.get("n", ""),
+            "ctl00$hdParameter": p.get("h", ""),
             "ctl00$C$UC_PERS_LIST1$ENTERPRISE_CODEFilterFld": mst_fmt,
             "__ASYNCPOST": "true",
             "ctl00$C$UC_PERS_LIST1$BtnFilter": "Tìm kiếm"
         }
 
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": url
+        }
+
         for _ in range(2):
             try:
-                async with session.post(url, data=payload, ssl=False, timeout=20) as r:
+                async with session.post(url, data=payload, ssl=False, timeout=20, headers=headers) as r:
                     text = await r.text()
 
                     match = re.search(
@@ -83,23 +95,28 @@ async def run_mst(session, mst, sem, p, url):
                     if not table:
                         return [{"MST_Gốc": mst_fmt, "Trạng_Thái": "Không có dữ liệu"}]
 
-                    hdrs = [th.get_text(strip=True) for th in table.find_all("th")]
+                    headers_tbl = [th.get_text(strip=True) for th in table.find_all("th")]
 
-                    return [
-                        {
+                    result = []
+                    for tr in table.find_all("tr")[1:]:
+                        tds = tr.find_all("td")
+                        if not tds:
+                            continue
+
+                        row = {
                             "MST_Gốc": mst_fmt,
-                            "Trạng_Thái": "Thành công",
-                            **{
-                                h: re.sub(r"\s+", " ", td.get_text(strip=True))
-                                for h, td in zip(hdrs, tr.find_all("td"))
-                                if h
-                            }
+                            "Trạng_Thái": "Thành công"
                         }
-                        for tr in table.find_all("tr")[1:]
-                        if tr.find_all("td")
-                    ]
 
-            except:
+                        for h, td in zip(headers_tbl, tds):
+                            row[h] = re.sub(r"\s+", " ", td.get_text(strip=True))
+
+                        result.append(row)
+
+                    return result
+
+            except Exception as e:
+                print("POST ERROR:", e)
                 await asyncio.sleep(0.5)
 
         return [{"MST_Gốc": mst_fmt, "Trạng_Thái": "Lỗi kết nối"}]
@@ -112,6 +129,7 @@ with st.sidebar:
     concurrency = st.slider("Số luồng (Concurrency)", 5, 100, 25)
     base_url = st.text_input("URL hệ thống (Bắt buộc)")
 
+
 uploaded_file = st.file_uploader("Upload danh sách MST (txt hoặc xlsx)", type=["txt", "xlsx"])
 btn_start = st.button("BẮT ĐẦU 🚀")
 
@@ -119,40 +137,37 @@ btn_start = st.button("BẮT ĐẦU 🚀")
 # ================= MAIN =================
 if btn_start:
     if not (base_url and cookie_raw and uploaded_file):
-        st.error("Vui lòng điền đầy đủ URL, Cookie và Upload file!")
+        st.error("Vui lòng nhập đủ URL, Cookie và file!")
     else:
 
         # ===== LOAD FILE =====
         if uploaded_file.name.endswith(".txt"):
-            content = uploaded_file.read().decode("utf-8").splitlines()
-            mst_list = [x.strip() for x in content if x.strip()]
+            mst_list = uploaded_file.read().decode("utf-8").splitlines()
+            mst_list = [x.strip() for x in mst_list if x.strip()]
         else:
             mst_list = pd.read_excel(uploaded_file, header=None)[0].dropna().astype(str).tolist()
 
-        # ===== COOKIES =====
-        cookies = {
-            c.split("=")[0].strip(): c.split("=")[1].strip()
-            for c in cookie_raw.split(";")
-            if "=" in c
-        }
+        # ===== COOKIE =====
+        cookies = {}
+        for c in cookie_raw.split(";"):
+            if "=" in c:
+                k, v = c.split("=", 1)
+                cookies[k.strip()] = v.strip()
 
         prog, stat, metr = st.progress(0), st.empty(), st.empty()
 
         async def main():
-            conn = aiohttp.TCPConnector(limit=0, ssl=False)
+            connector = aiohttp.TCPConnector(limit=0, ssl=False)
 
             async with aiohttp.ClientSession(
                 cookies=cookies,
-                connector=conn,
-                headers={
-                    "User-Agent": "Mozilla/5.0",
-                    "X-Requested-With": "XMLHttpRequest"
-                }
+                connector=connector,
+                headers={"User-Agent": "Mozilla/5.0"}
             ) as sess:
 
                 p = await get_params(sess, base_url)
                 if not p:
-                    return [{"Lỗi": "Không thể kết nối hoặc URL sai"}]
+                    return [{"Lỗi": "Không lấy được VIEWSTATE / URL sai"}]
 
                 sem = asyncio.Semaphore(concurrency)
                 tasks = [run_mst(sess, m, sem, p, base_url) for m in mst_list]
@@ -169,7 +184,7 @@ if btn_start:
 
                     prog.progress(i / len(mst_list))
                     metr.markdown(
-                        f"⚡ **Tốc độ:** {speed:.2f} req/s | ⏳ Còn lại: {int((len(mst_list)-i)/speed) if speed else 0}s"
+                        f"⚡ Tốc độ: {speed:.2f} req/s | ⏳ Còn lại: {int((len(mst_list)-i)/speed) if speed else 0}s"
                     )
                     stat.text(f"Đang xử lý: {i}/{len(mst_list)}")
 
@@ -182,7 +197,7 @@ if btn_start:
         df = df.dropna(axis=1, how="all")
         df = df.loc[:, ~(df.astype(str).apply(lambda c: c.str.strip().eq('').all()))]
 
-        st.success(f"Hoàn thành tra cứu {len(mst_list)} MST!")
+        st.success(f"Hoàn thành {len(mst_list)} MST!")
         st.dataframe(df, use_container_width=True)
 
         # ===== EXPORT =====
@@ -191,8 +206,8 @@ if btn_start:
             df.to_excel(writer, index=False)
 
         st.download_button(
-            "📥 Tải kết quả Excel",
+            "📥 Tải Excel",
             out.getvalue(),
             f"ketqua_{int(time.time())}.xlsx",
-            mime="application/vnd.ms-excel"
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
