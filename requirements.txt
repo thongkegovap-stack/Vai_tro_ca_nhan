@@ -1,0 +1,6 @@
+﻿streamlit
+aiohttp
+pandas
+beautifulsoup4
+openpyxl
+lxml
