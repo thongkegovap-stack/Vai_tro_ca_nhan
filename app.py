@@ -4,6 +4,7 @@ from bs4 import BeautifulSoup
 
 # --- UI CONFIG & STYLE ---
 st.set_page_config(page_title="MST Scraper Pro", layout="wide", page_icon="🚀")
+
 st.markdown("""<style>
     .stApp { background: linear-gradient(135deg, #d7e1ec, #f5f7fa); }
     .header { background: linear-gradient(135deg, #1f4037, #99f2c8); padding: 18px; border-radius: 16px; 
@@ -21,7 +22,9 @@ async def get_params(session, url):
 
             def safe(name):
                 el = soup.find("input", {"name": name})
-                return el["value"] if el and el.has_attr("value") else ""
+                if el is not None:
+                    return el.get("value", "")
+                return ""
 
             return {
                 "n": safe("ctl00$nonceKeyFld"),
@@ -42,8 +45,6 @@ async def run_mst(session, mst, sem, p, url):
             "__VIEWSTATE": p.get("v", ""),
             "ctl00$nonceKeyFld": p.get("n", ""),
             "ctl00$hdParameter": p.get("h", ""),
-            "ctl00$nonceKeyFld": p['n']["value"] if p.get('n') else "",
-            "ctl00$hdParameter": p['h']["value"] if p.get('h') else "",
             "ctl00$C$UC_PERS_LIST1$ENTERPRISE_CODEFilterFld": mst_fmt,
             "__ASYNCPOST": "true",
             "ctl00$C$UC_PERS_LIST1$BtnFilter": "Tìm kiếm"
@@ -53,8 +54,10 @@ async def run_mst(session, mst, sem, p, url):
             try:
                 async with session.post(url, data=payload, ssl=False, timeout=20) as r:
                     text = await r.text()
+
                     match = re.search(r'updatePanel\|ctl00_C_UpdatePanel1\|(.*?)\|hiddenField', text, re.S)
                     soup = BeautifulSoup(match.group(1) if match else text, "lxml")
+
                     table = soup.find("table", id=re.compile("UC_PERS_LIST1"))
 
                     if not table:
@@ -143,7 +146,7 @@ if btn_start:
 
                     prog.progress(i / total)
                     metr.markdown(
-                        f"⚡ **Tốc độ:** {speed:.2f} req/s | ⏳ **Dự kiến còn:** {int((total-i)/speed) if speed > 0 else 0}s"
+                        f"⚡ **Tốc độ:** {speed:.2f} req/s | ⏳ **Còn:** {int((total-i)/speed) if speed > 0 else 0}s"
                     )
                     stat.text(f"Đang xử lý: {i}/{total}")
 
@@ -151,28 +154,21 @@ if btn_start:
 
         data = asyncio.run(main())
 
-        # ================= FIX CỘT RỖNG =================
+        # FIX DATAFRAME RỖNG
         df = pd.DataFrame(data)
-
-        # Xoá cột toàn NaN
         df = df.dropna(axis=1, how='all')
-
-        # Xoá cột toàn chuỗi rỗng
         df = df.loc[:, ~(df.astype(str).apply(lambda col: col.str.strip().eq('').all()))]
-        # ==================================================
 
         st.success(f"Hoàn thành tra cứu {len(mst_list)} MST!")
         st.dataframe(df, use_container_width=True)
 
-        # Export Excel
         out = io.BytesIO()
         with pd.ExcelWriter(out, engine="openpyxl") as writer:
             df.to_excel(writer, index=False)
 
         st.download_button(
-            "📥 Tải kết quả Excel",
+            "📥 Tải Excel",
             out.getvalue(),
             f"ketqua_{int(time.time())}.xlsx",
-            mime="application/vnd.ms-excel"
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-
